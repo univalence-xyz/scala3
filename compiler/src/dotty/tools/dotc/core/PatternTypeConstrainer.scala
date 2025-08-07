@@ -244,6 +244,15 @@ trait PatternTypeConstrainer { self: TypeComparer =>
         tp
     }
 
+    // Treat a pattern base argument as non-rigid if its bounds are inexact
+    // (lo != hi) or its lower bound is not Nothing. This captures params like
+    // `B >: SomeType` which should not induce equalities against the scrutinee arg.
+    inline def isNonRigidArg(arg: Type): Boolean =
+      val tb = arg.bounds
+      val lo = tb.lo
+      val hi = tb.hi
+      !(lo eq hi) || !lo.isNothingType
+
     val patternCls = patternTp.classSymbol
     val scrutineeCls = scrutineeTp.classSymbol
 
@@ -258,9 +267,12 @@ trait PatternTypeConstrainer { self: TypeComparer =>
     trace(i"constraining simple pattern type $tp >:< $pt", gadts, (res: Boolean) => i"$res gadt = ${ctx.gadt}") {
       (tp, pt) match {
         case (AppliedType(tyconS, argsS), AppliedType(tyconP, argsP)) => rollbackConstraintsUnless:
-          tyconS.typeParams.lazyZip(argsS).lazyZip(argsP).forall { (param, argS, argP) =>
+          val baseParamsSyms = tyconS.typeSymbol.typeParams
+          tyconS.typeParams.lazyZip(argsS).lazyZip(argsP).lazyZip(baseParamsSyms).forall { (param, argS, argP, baseSym) =>
             val variance = param.paramVarianceSign
-            if variance == 0 || assumeInvariantRefinement ||
+            // Guard: skip deriving constraints for this parameter if pattern arg is non-rigid w.r.t base param
+            if isNonRigidArg(argP) then true
+            else if variance == 0 || assumeInvariantRefinement ||
               // As a special case, when pattern and scrutinee types have the same type constructor,
               // we infer better bounds for pattern-bound abstract types.
               argP.typeSymbol.isPatternBound && patternTp.classSymbol == scrutineeTp.classSymbol
